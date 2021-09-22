@@ -1,0 +1,33 @@
+---
+execution:
+  - scenario: search
+    iterations: 10
+    write-xml-jtl: full
+
+scenarios:
+  home:
+    script: scenarios/jmx/home.jmx
+  search:
+    script: scenarios/jmx/search.jmx
+
+settings:
+  artifacts-dir: artifacts
+
+reporting:
+  - module: console
+  - module: final_stats
+    summary: true  # overall samples count and percent of failures
+    percentiles: true  # display average times and percentiles
+    failed-labels: false  # provides list of sample labels with failures
+    test-duration: true  # provides test duration
+    dump-xml: stats.xml
+
+modules:
+  jmeter:
+    version: 5.3
+    download-link: https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-{version}.zip
+    properties:
+      server.rmi.ssl.disable: true
+    xml-jtl-flags:
+      xml: false
+      connectTime: true

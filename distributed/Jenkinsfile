@@ -1,0 +1,148 @@
+def podLabel = UUID.randomUUID().toString()
+
+String jmeterVersion = 5.3
+String artifactsDirectory = 'artifacts'
+String environment = 'development'
+
+String cluster = "perf-cluster"
+String project = "striped-proxy-280112"
+String zone = "europe-west1-b"
+
+String helmRepo = "agrisin/helm"
+String helmVersion = 'latest'
+String bztRepo = "agrisin/bzt"
+String bztVersion = 'latest'
+String jmeterRepo = "agrisin/jmeter"
+String jmeterRepoVersion = 'latest'
+
+properties([
+        buildDiscarder(logRotator(artifactDaysToKeepStr: '', artifactNumToKeepStr: '', daysToKeepStr: '5', numToKeepStr: '5')),
+        parameters([
+                choice(choices: ['1', '2', '3', '4'], description: '', name: 'executors'),
+                choice(choices: ['search', 'home'], description: '', name: 'scenario'),
+                choice(choices: ['10', '100', '1000'], description: '', name: 'iterations')
+        ])
+])
+
+podTemplate(
+        label: podLabel,
+        containers: [
+                containerTemplate(
+                        name: 'bzt',
+                        image: "$bztRepo:$bztVersion",
+                        alwaysPullImage: true,
+                        ttyEnabled: true,
+                        command: 'cat',
+                        workingDir: '/home/jenkins/agent'
+                ),
+                containerTemplate(
+                        name: 'helm',
+                        image: "$helmRepo:$helmVersion",
+                        alwaysPullImage: true,
+                        ttyEnabled: true,
+                        command: 'cat',
+                        workingDir: '/home/jenkins/agent'
+                )
+        ]
+)
+
+{
+    node(podLabel) {
+        try
+        {
+            stage('checkout') {
+                checkout scm
+            }
+
+            container('helm') {
+                stage('deploy jmeter') {
+                    withCredentials([file(credentialsId: 'jenkins-sa', variable: 'GC_KEY')]) {
+                        sh "gcloud auth activate-service-account --key-file=${GC_KEY}"
+                        sh "gcloud container clusters get-credentials ${cluster} --zone ${zone} --project ${project}"
+                        sh "gcloud auth configure-docker -q"
+                    }
+
+                    sh "helm uninstall -n ${environment} jmeter-${environment} || true"
+
+                    sh "helm upgrade --install -n ${environment} jmeter-${environment} charts/jmeter \
+                      --set 'image.repository=${jmeterRepo}' \
+                      --set 'image.tag=${jmeterRepoVersion}' \
+                      --set 'replicaCount=${params.executors}' \
+                      --set 'service.name=jmeter-${environment}' \
+                      --wait \
+                      --timeout 1200s "
+                }
+            }
+
+            def distributedParameters = jmeterDistributedParameters(params.executors, environment)
+
+            container('bzt') {
+                stage('run tests') {
+                    sh "bzt execute.yml \
+                       -o modules.jmeter.version=${jmeterVersion} \
+                       -o settings.artifacts-dir=${artifactsDirectory} \
+                       -o execution.0.scenario=${params.scenario} \
+                       -o execution.0.write-xml-jtl=full \
+                       -o execution.0.iterations=${params.iterations} \
+                       ${distributedParameters} "
+                }
+            }
+
+            container('bzt') {
+                stage('publish performance trends') {
+                    perfReport(compareBuildPrevious: true,
+                               modeOfThreshold: true,
+                               relativeUnstableThresholdPositive: -1,
+                               sourceDataFiles: 'stats.xml')
+                }
+            }
+
+            container('bzt') {
+                stage('jmeter report') {
+                    sh "sh merge-reports.sh"
+                    sh "/root/.bzt/jmeter-taurus/${jmeterVersion}/bin/jmeter -g ${artifactsDirectory}/merged.csv -o report"
+                    sh "tar czf report.tar.gz report/"
+                    sh "tar czf artifacts.tar.gz ${artifactsDirectory}/"
+                }
+            }
+        }
+        catch (any)
+        {
+            currentBuild.result = 'FAILURE'
+            throw any
+        }
+        finally
+        {
+            if (currentBuild.result == null)
+            {
+                currentBuild.result = 'SUCCESS'
+            }
+            archiveArtifacts 'artifacts.tar.gz'
+            archiveArtifacts 'report.tar.gz'
+            publishHTML(target: [
+                    allowMissing         : false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll              : true,
+                    reportDir            : 'report',
+                    reportFiles          : 'index.html',
+                    reportName           : "Performance Report"
+            ])
+            container('helm') {
+                sh "helm uninstall -n ${environment} jmeter-${environment} || true"
+            }
+        }
+    }
+}
+
+@NonCPS
+String jmeterDistributedParameters(String executors, String environment)
+{
+    String distributedParameters = ''
+    InetAddress[] dnsStoreInetAddress = InetAddress.getAllByName "jmeter-${environment}.${environment}"
+
+    executors.toInteger().times { executorNum ->
+        distributedParameters += "-o execution.0.distributed.${executorNum}=${dnsStoreInetAddress[executorNum].getHostAddress()} "
+    }
+
+    distributedParameters
+}

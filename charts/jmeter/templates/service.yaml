@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "jmeter.fullname" . }}
+  labels:
+    {{- include "jmeter.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: jmeter
+      protocol: TCP
+      name: jmeter
+  selector:
+    {{- include "jmeter.selectorLabels" . | nindent 4 }}

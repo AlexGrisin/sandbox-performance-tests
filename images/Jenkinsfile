@@ -1,0 +1,81 @@
+def podLabel = UUID.randomUUID().toString()
+
+properties([
+        buildDiscarder(logRotator(artifactDaysToKeepStr: '', artifactNumToKeepStr: '', daysToKeepStr: '5', numToKeepStr: '5')),
+        parameters([
+                choice(choices: ['jmeter', 'bzt', 'helm'], description: '', name: 'image'),
+//                string(defaultValue: 'eu.gcr.io', description: '', name: 'host', trim: false),
+//                string(defaultValue: 'cluster-1', description: '', name: 'cluster', trim: false),
+//                string(defaultValue: 'striped-proxy-280112', description: '', name: 'project', trim: false),
+//                string(defaultValue: 'europe-west1-b', description: '', name: 'zone', trim: false)
+        ])
+])
+
+podTemplate(
+        label: podLabel,
+        containers: [
+                containerTemplate(
+                        name: 'cloud-sdk',
+                        image: 'google/cloud-sdk:alpine',
+                        alwaysPullImage: true,
+                        ttyEnabled: true,
+                        command: 'cat',
+                        workingDir: '/home/jenkins/agent'
+                )
+        ],
+        volumes: [
+                hostPathVolume(mountPath: '/var/run/docker.sock', hostPath: '/var/run/docker.sock')
+        ]
+)
+
+{
+    node(podLabel) {
+        try
+        {
+            container('cloud-sdk') {
+                stage('checkout') {
+                    checkout scm
+                }
+
+                date = new Date().format('yyyy-MM-dd_HH-mm-ss')
+                tag = "agrisin/${params.image}:${date}_${env.BUILD_NUMBER}"
+                latest = "agrisin/${params.image}:latest"
+
+                stage('build') {
+                    sh "docker build --no-cache=true -t ${tag} -t ${latest} images/${image}"
+                }
+
+//                stage('gcloud login') {
+//                    withCredentials([file(credentialsId: 'jenkins-sa', variable: 'GC_KEY')]) {
+//                        sh "gcloud auth activate-service-account --key-file=${GC_KEY}"
+//                        sh "gcloud container clusters get-credentials ${params.cluster} --zone ${params.zone} --project ${params.project}"
+//                        sh "gcloud auth configure-docker -q"
+//                    }
+//                }
+
+                stage('docker hub login') {
+                    withCredentials([usernamePassword(credentialsId: 'dockerhub', passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]) {
+                        sh "docker login -u ${USERNAME} -p ${PASSWORD}"
+                    }
+                }
+
+                stage('publish') {
+                    sh "docker push ${tag}"
+                    sh "docker push ${latest}"
+                }
+            }
+        }
+        catch (any)
+        {
+            currentBuild.result = 'FAILURE'
+            throw any
+        }
+        finally
+        {
+            if (currentBuild.result == null)
+            {
+                currentBuild.result = 'SUCCESS'
+            }
+        }
+    }
+}

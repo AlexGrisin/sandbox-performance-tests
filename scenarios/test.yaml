@@ -1,0 +1,7 @@
+scenarios:
+  home:
+    requests:
+      - https://www.google.com/
+  search:
+    requests:
+      - https://www.google.com/search?q=test
